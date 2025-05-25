@@ -1,0 +1,225 @@
+---
+title: "Hawaii checklist"
+author: "Sven Weber"
+format: html
+editor: visual
+---
+
+
+```{r}
+library(tidyverse)
+library(here)
+library(openxlsx)
+library(janitor)
+```
+
+```{r}
+
+v1 <- read.xlsx(here::here("data/2025_05_23_v1.xlsx")) |> 
+      clean_names()
+
+v1.order <- v1 |> 
+  rename(ncbi_sequence = dw_ssq,
+         bold_sequence = sequence) |>
+  mutate(dataset_b = paste0(dataset_b," ",dataset_h),
+         dataset_g = paste0(dataset_g," ",dataset_h)) |>
+  select( -dataset_p, -dataset, -dataset_h) |> 
+  pivot_longer(cols = starts_with("dataset"), names_to = "dataset", values_to = "dataset_source",
+               values_drop_na = TRUE) |> 
+  mutate(dataset_source = str_remove_all(dataset_source, "NA| NA")) |> 
+  select(-dataset) |> 
+  pivot_longer(cols = contains("sequence"), names_to = "sequence_source", values_to = "sequence",
+               values_drop_na = FALSE) |> 
+  filter(
+    !(
+      dataset_source %in% c("bold hawaii", "genebank hawaii") &
+      is.na(sequence)
+    )
+  ) |> 
+  #muate sequence_source to NA if dataset_source is hawaii, keep it as is for the rest use ifelse
+  mutate(sequence_source = ifelse(dataset_source == " hawaii", NA_character_, sequence_source)) |> 
+  mutate(seq_id = str_remove_all(seq_id, "_NCBI|_BOLD")) |> 
+  mutate(seq_combined = paste0(seq_id, " Gl:",tax_id)) |>
+  mutate(seq_combined = str_remove_all(seq_combined, "_NCBI|_BOLD"),
+         seq_combined = str_replace(seq_combined, "_1", ".1")) |> 
+  pivot_longer(cols = c("seq_combined","acc_no"), names_to = "name", values_to = "acc_number_tax",
+               values_drop_na = FALSE) |> 
+    mutate(
+    acc_number_tax = case_when(
+      str_detect(acc_number_tax, "NA ") |
+      str_detect(acc_number_tax, ":NA") ~ NA_character_,
+      TRUE                              ~ acc_number_tax
+    )
+  ) |> 
+  select(-name) |> 
+  separate(col = acc_number_tax, into = c("accession_number", "ncbi_taxon"), sep = " ", remove = F) |> 
+  select(-tax_id) |> 
+  select(-length) |> 
+  mutate(sequence = trimws(sequence),
+         sequence_length = str_length(sequence),
+    # count literal “N” characters
+         sequence_n_count = str_count(sequence, "N"),
+    # count any IUPAC “wobble” code (R, Y, S, W, K, M, B, D, H or V)
+    sequence_wobble_count = str_count(sequence, "[RYSWKMBDHV]")) |> 
+  select(-seq_id) |> 
+  mutate(
+    allowed = case_when(
+      # plain “hawaii” must have NA sequence
+      dataset_source == " hawaii" &
+        is.na(sequence)                                     ~ TRUE,
+      # bold hawaii must come from bold_sequence
+      dataset_source == "bold hawaii" &
+        sequence_source == "bold_sequence"                 ~ TRUE,
+      # genebank hawaii must come from ncbi_sequence
+      dataset_source == "genebank hawaii" &
+        sequence_source == "ncbi_sequence"                 ~ TRUE,
+      # everything else is an error
+      TRUE                                                  ~ FALSE
+    )) |> 
+  filter(allowed == TRUE) |> 
+  distinct() |> 
+    mutate(
+    issue = case_when(
+      # Case 1: seq present, acc missing
+      !is.na(sequence) & is.na(acc_number_tax) ~ F,
+      
+      # Case 2: both seq AND acc missing
+      is.na(sequence) & is.na(acc_number_tax) ~ T,
+      
+      !is.na(sequence) & !is.na(acc_number_tax) ~ T,
+      
+      is.na(sequence) & !is.na(acc_number_tax) ~ F,
+    )) |> 
+  filter(issue == T) |> 
+  group_by(species) |>
+  slice_max(sequence, n = 1) |> 
+  arrange(class, order, species)
+
+#check unique length between data sets
+length(unique(v1.order$species)) ==  length(unique(v1$species))
+
+
+v1.clean <- v1.order |> 
+  #remove the paranteheses from the author column
+  mutate(author = str_remove_all(author, "\\(.*?\\)")) |>
+  #capatalize the entries for the columns, phylum, order, class
+  mutate(across(c(phylum, class, order), str_to_title)) |>
+  select(-allowed, -issue) |> 
+  #create new column status_simple with NATIVE and INTRODUCED based on entires from status:
+  # end: endemic
+  # adv: adventive
+  # ind: indigenous (ie, native but not endemic); not sure that I would trust this designation.
+  # pur: purposefully introduced
+  # del: deliberately introduced (same as pur)
+  # dub: dubious
+  # qua: intercepted at quarantine (not established)
+  # NA: Not applicable (sequence from outside Hawaii)
+  mutate(status_simple = case_when(
+    status == "end" ~ "NATIVE",
+    status %in% c("adv", "pur", "del") ~ "INTRODUCED",
+    status == "ind" ~ "NATIVE",
+    status == "dub" ~ "DUBIOUS",
+    status == "qua" ~ "INTRODUCED",
+    is.na(status) ~ NA_character_,
+    TRUE ~ "UNKNOWN"
+  ),.after = status) |> 
+  #fix sequence source, Pritam did a mergin mistake, all sequences below 300 and more than 700bp need to be changed
+  #to ncbi_sequence, additionall ncbi hawaii is a better label compared to genebank hawaii, so we change dataset_source as well
+  # and this needs to be done after the sequence length is calculated and again for the whole column since some are still wrongly labeled
+  # with bold hawaii in the dataset_source
+  mutate(
+    sequence_source = ifelse(sequence_length < 300 | sequence_length > 700, "ncbi_sequence", sequence_source),
+    dataset_source = ifelse(sequence_length < 300 | sequence_length > 700, "ncbi hawaii", dataset_source)
+  ) 
+
+```
+
+```{r}
+#write dynamix xlsx file with a readme sheet with openxlsx that explains the columns and the data
+#output needs to be dynamic to data and i want a readme sheet in the same file 
+
+
+library(openxlsx)
+library(dplyr)
+
+# ── 1) YOUR DATA FRAME ────────────────────────────────────────────────────────
+df <- v1.clean      # ← replace with your real object
+
+# grab its symbol as text, plus a date stamp
+df_name    <- deparse(substitute(df))
+date_stamp <- format(Sys.Date(), "%Y-%m-%d")
+
+# build dynamic file & sheet names
+out_file        <- sprintf("%s_checklist_V1.xlsx", date_stamp)
+sheet_readme <- "readME"
+sheet_data   <- paste0("checklist_", "V1")
+out_path <- here::here("data", out_file)
+
+# ── 2) SUPPLY 1–2 SENTENCE DESCRIPTIONS ──────────────────────────────────────
+#    Keep each string to at most two sentences.
+col_desc <- c(
+  phylum               = "The biological phylum for each specimen (e.g. Arthropoda).",
+  class                = "The taxonomic class within that phylum (e.g. Insecta).",
+  order                = "The taxonomic order (e.g. Coleoptera).",
+  family               = "The family-level classification.",
+  author               = "The authority who first described the species.",
+  species              = "The binomial species name.",
+  synonyms             = "Known taxonomic synonyms for this species.",
+  status               = "Invasion status (in over 15 categories [too many people using different abbrevations]).",
+  status_simple        = "A simplified status flag. Just: ITRODUCED OR NATIVE.",
+  locality             = "Field locality description where the specimen was collected.",
+  event_id             = "Unique identifier for the collecting event.",
+  lat                  = "Latitude of the collection site (decimal degrees).",
+  lon                  = "Longitude of the collection site (decimal degrees).",
+  elev_m               = "Elevation of the collection site in meters.",
+  collection_code      = "Institutional or project-specific collection code.",
+  specimen_code        = "Unique specimen identifier within that collection.",
+  island               = "Island name in Hawai‘i where collected.",
+  gene                 = "Gene marker sequenced (e.g. COI and directions , we aim for 5P3).",
+  dataset_source       = "Which dataset this row originated from (hawaii = checklist, bold hawaii = bold search, genebank hawaii = manual search).",
+  sequence_source      = "Whether the sequence came from BOLD or NCBI.",
+  sequence             = "The raw DNA sequence (NA if none).",
+  acc_number_tax       = "Taxonomic accession number (from NCBI or BOLD).",
+  accession_number     = "Raw accession identifier string (BOLD or GenBank).",
+  ncbi_taxon           = "NCBI taxon ID corresponding to the accession.",
+  sequence_length      = "Length of the sequence in base pairs.",
+  sequence_n_count     = "Number of ambiguous “N” bases in the sequence.",
+  sequence_wobble_count= "Count of IUPAC wobble codes (R,Y,S…)."
+)
+
+# ── 3) BUILD YOUR METADATA TABLE ──────────────────────────────────────────────
+col_info <- tibble(
+  Column        = names(df),
+  Class         = sapply(df, function(x) paste(class(x), collapse = ", ")),
+  NA_Count      = sapply(df, function(x) sum(is.na(x))),
+  Unique_Values = sapply(df, function(x) length(unique(x)))
+) %>%
+  mutate(
+    Description = col_desc[Column]
+  )
+
+# ── 4) WRITE OUT WITH openxlsx ───────────────────────────────────────────────
+wb <- createWorkbook()
+
+addWorksheet(wb, sheet_readme)
+writeData(wb, sheet_readme,
+          c("This workbook contains two sheets:",
+            sprintf(" • %s: the cleaned dataset", sheet_data),
+            sprintf(" • %s: metadata about each column", sheet_readme),
+            "",
+            "Below is the automatically-generated column metadata:"
+          ),
+          startRow = 1, colNames = FALSE)
+
+writeData(wb, sheet_readme, col_info, startRow = 6)
+
+addWorksheet(wb, sheet_data)
+writeData(wb, sheet_data, df)
+
+saveWorkbook(wb, out_path, overwrite = TRUE)
+
+message("Wrote workbook: ", out_file)
+
+
+```
+

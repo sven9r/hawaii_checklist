@@ -1,0 +1,188 @@
+---
+title: "update checklist"
+author: "Sven Weber"
+format: html
+editor: visual
+---
+
+```{r}
+library(fs)
+library(here)
+library(readxl)
+library(openxlsx)
+library(dplyr)
+library(tidyr)
+library(purrr)
+
+```
+
+```{r}
+
+
+# 1) FIND PREVIOUS VERSION & SET UP NEW VERSION ────────────────────────────
+data_dir     <- here("data")
+prev_files <- dir_ls(data_dir, regexp = "_checklist_V\\d+\\.xlsx$")
+
+# extract version numbers
+prev_info <- tibble(
+  path    = prev_files,
+  version = as.integer(str_extract(path, "(?<=_checklist_V)\\d+(?=\\.xlsx)"))
+) %>% arrange(version)
+
+old_path    <- prev_info$path[nrow(prev_info)]
+old_version <- prev_info$version[nrow(prev_info)]
+new_version <- old_version + 1
+
+
+
+# 2) BUILD DYNAMIC NAMES ───────────────────────────────────────────────────
+date_stamp  <- format(Sys.Date(), "%Y-%m-%d")
+old_sheet   <- paste0("checklist_V", old_version)
+new_sheet   <- paste0("checklist_V", new_version)
+out_file    <- here(data_dir, paste0("checklist_v", new_version, ".xlsx"))
+
+
+# ── 3) READ OLD & NEW DATA ───────────────────────────────────────────────────
+df_prev <- read_excel(old_path, sheet = old_sheet)
+# assume your current cleaned df is in R as `df_curr`:
+df_curr <- read_excel(here::here("data/test.xlsx"), sheet = "checklist_V1")  # replace with your actual current data source
+
+# ── 4) SUMMARY METRICS + DELTAS ---------------------------------------------
+summ_prev <- tibble::tibble(
+  Version                   = paste0("V", old_version),
+  Date                      = as.Date(file_info(old_path)$birth_time),
+  Total_Entries             = nrow(df_prev),
+  Entries_With_Sequence     = sum(!is.na(df_prev$sequence)),
+  Unique_Species_With_Seq   = n_distinct(df_prev$species[!is.na(df_prev$sequence)]),
+  Percent_With_Sequence     = round(Entries_With_Sequence / Total_Entries * 100, 2)
+)
+
+summ_curr <- tibble::tibble(
+  Version                   = paste0("V", new_version),
+  Date                      = Sys.Date(),
+  Total_Entries             = nrow(df_curr),
+  Entries_With_Sequence     = sum(!is.na(df_curr$sequence)),
+  Unique_Species_With_Seq   = n_distinct(df_curr$species[!is.na(df_curr$sequence)]),
+  Percent_With_Sequence     = round(Entries_With_Sequence / Total_Entries * 100, 2)
+)
+
+# ── 5) BUILD HISTORY SUMMARY (no cell-level diffs) --------------------------
+
+
+
+# new_entry already defined from summ_curr/summ_prev
+new_entry <- tibble(
+  Version                   = summ_curr$Version,
+  Date                      = summ_curr$Date,
+  Total_Entries             = summ_curr$Total_Entries,
+  Entries_With_Sequence     = summ_curr$Entries_With_Sequence,
+  Unique_Species_With_Seq   = summ_curr$Unique_Species_With_Seq,
+  Percent_With_Sequence     = summ_curr$Percent_With_Sequence,
+  Δ_Entries_With_Seq        = summ_curr$Entries_With_Sequence    - summ_prev$Entries_With_Sequence,
+  Δ_Unique_Spp_With_Seq     = summ_curr$Unique_Species_With_Seq - summ_prev$Unique_Species_With_Seq,
+  Δ_Percent_With_Seq        = summ_curr$Percent_With_Sequence    - summ_prev$Percent_With_Sequence,
+  Summary                   = paste0(
+    abs(Δ_Unique_Spp_With_Seq), ifelse(Δ_Unique_Spp_With_Seq > 0, " species added; ", " species deleted; "),
+    abs(Δ_Entries_With_Seq),    ifelse(Δ_Entries_With_Seq > 0, " sequences added; ", " sequences deleted; "),
+    "Pct Δ: ", round(Δ_Percent_With_Seq, 2), "%"
+  )
+)
+
+# check for old log
+if (file_exists(old_path) && "log" %in% excel_sheets(old_path)) {
+
+  old_log <- read_excel(old_path, sheet = "log")
+  history <- bind_rows(old_log, new_entry)
+
+} else {
+
+  warning("No previous ‘log’ sheet found—initializing history with V1 summary.")
+  
+  initial_entry <- summ_prev %>%
+    mutate(
+      Δ_Entries_With_Seq      = NA_integer_,
+      Δ_Unique_Spp_With_Seq   = NA_integer_,
+      Δ_Percent_With_Seq      = NA_real_,
+      Summary                 = NA_character_
+    )
+
+  history <- bind_rows(initial_entry, new_entry)
+}
+
+
+# 6) COLUMN METADATA (readME) ------------------------------------------------
+col_desc <- c(
+  phylum               = "The biological phylum for each specimen (e.g. Arthropoda).",
+  class                = "The taxonomic class within that phylum (e.g. Insecta).",
+  order                = "The taxonomic order (e.g. Coleoptera).",
+  family               = "The family-level classification.",
+  author               = "The authority who first described the species.",
+  species              = "The binomial species name.",
+  synonyms             = "Known taxonomic synonyms for this species.",
+  status               = "Invasion status (in over 15 categories [too many people using different abbrevations]).",
+  status_simple        = "A simplified status flag. Just: ITRODUCED OR NATIVE.",
+  locality             = "Field locality description where the specimen was collected.",
+  event_id             = "Unique identifier for the collecting event.",
+  lat                  = "Latitude of the collection site (decimal degrees).",
+  lon                  = "Longitude of the collection site (decimal degrees).",
+  elev_m               = "Elevation of the collection site in meters.",
+  collection_code      = "Institutional or project-specific collection code.",
+  specimen_code        = "Unique specimen identifier within that collection.",
+  island               = "Island name in Hawai‘i where collected.",
+  gene                 = "Gene marker sequenced (e.g. COI and directions , we aim for 5P3).",
+  dataset_source       = "Which dataset this row originated from (hawaii = checklist, bold hawaii = bold search, genebank hawaii = manual search).",
+  sequence_source      = "Whether the sequence came from BOLD or NCBI.",
+  sequence             = "The raw DNA sequence (NA if none).",
+  acc_number_tax       = "Taxonomic accession number (from NCBI or BOLD).",
+  accession_number     = "Raw accession identifier string (BOLD or GenBank).",
+  ncbi_taxon           = "NCBI taxon ID corresponding to the accession.",
+  sequence_length      = "Length of the sequence in base pairs.",
+  sequence_n_count     = "Number of ambiguous “N” bases in the sequence.",
+  sequence_wobble_count= "Count of IUPAC wobble codes (R,Y,S…)."
+)
+
+col_info <- tibble::tibble(
+  Column        = names(df_curr),
+  Class         = sapply(df_curr, function(x) paste(class(x), collapse = ", ")),
+  NA_Count      = sapply(df_curr, function(x) sum(is.na(x))),
+  Unique_Values = sapply(df_curr, function(x) length(unique(x)))
+) %>%
+  mutate(Description = col_desc[Column])
+
+# 7) BUILD & SAVE WORKBOOK --------------------------------------------------
+wb <- createWorkbook()
+
+addWorksheet(wb, "log")
+writeData(wb, "log", history, startRow = 1)
+
+addWorksheet(wb, "readME")
+writeData(wb, "readME",
+          c("This workbook contains three sheets:",
+            " • log:    version history summary",
+            " • readME: column metadata & descriptions",
+            paste0(" • ", new_sheet, ": the cleaned dataset"),
+            ""),
+          startRow = 1, colNames = FALSE)
+writeData(wb, "readME", col_info, startRow = 7)
+
+addWorksheet(wb, new_sheet)
+writeData(wb, new_sheet, df_curr)
+
+date_stamp <- format(Sys.Date(), "%Y-%m-%d")
+out_file   <- here::here(
+  "data",
+  paste0(date_stamp, "_checklist_V", new_version, ".xlsx")
+)
+
+# then later:
+saveWorkbook(wb, out_file, overwrite = TRUE)
+message("Wrote: ", out_file)
+
+```
+
+
+```{r}
+
+```
+
+

@@ -19,8 +19,10 @@ The function will tage the last version available to create a new versionized fi
 write_versioned_checklist(new_version, data_dir="data")
 
 7. enjoy the log:
-| Version | Date    | Total Entries | Entries With Sequence | Unique Species With Seq | Percent With Sequence | Δ Entries With Seq | Δ Unique Spp With Seq | Δ Percent With Seq | Summary                                          |
-| ------- | ------- | ------------- | --------------------- | ----------------------- | --------------------- | ------------------ | --------------------- | ------------------ | ------------------------------------------------ |
-| V1      | 5/25/25 | 12764         | 3091                  | 2599                    | 24.22%                |                    |                       |                    |                                                  |
-| V2      | 5/24/25 | 12766         | 3093                  | 2601                    | 24.23%                | 2                  | 2                     | 0.01%              | 2 species added; 2 sequences added; Pct Δ: 0.01% |
 
+Version History
+
+| Version | Date    | Total Entries | Entries With Sequence | Unique Species With Seq | Percent With Sequence | Δ Entries With Seq | Δ Unique Spp With Seq | Δ Percent With Seq | Summary                                                       |
+|---------|---------|---------------|-----------------------|-------------------------|-----------------------|--------------------|-----------------------|--------------------|---------------------------------------------------------------|
+| V1      | 5/25/25 | 12764         | 3091                  | 2599                    | 24.22%                |                    |                       |                    |                                                               |
+| V2      | 5/24/25 | 12766         | 3093                  | 2601                    | 24.23%                | 2                  | 2                     | 0.01%              | 2 species added; 2 sequences added; Pct Δ: 0.01%              |
